@@ -6,6 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import base64
+import io
 
 # Set page configuration
 st.set_page_config(
@@ -16,11 +17,16 @@ st.set_page_config(
 )
 
 # Define functions
-def load_data():
-    """Load and preprocess the CSV data"""
+def load_data(uploaded_file=None):
+    """Load and preprocess the CSV data from uploaded file or local path"""
     try:
-        # Passe diesen Pfad an die tatsächliche Lage deiner Datei an
-        df = pd.read_csv('/Users/olivier/Desktop/ChargeME-transactions.csv', delimiter=';', decimal=',')
+        if uploaded_file is not None:
+            # Read from uploaded file
+            df = pd.read_csv(uploaded_file, delimiter=';', decimal=',')
+        else:
+            # Show message that upload is required
+            st.info("Bitte lade eine ChargeME-Transaktionsdatei hoch.")
+            return None
         
         # Process date columns
         df['Gestartet'] = pd.to_datetime(df['Gestartet'], errors='coerce')
@@ -121,7 +127,7 @@ def create_weekday_summary(df):
 def plot_monthly_consumption(monthly_df, last_n_months=12):
     """Plot monthly consumption with cost overlay"""
     # Get the last N months
-    df_plot = monthly_df.iloc[-last_n_months:].copy()
+    df_plot = monthly_df.iloc[-last_n_months:].copy() if len(monthly_df) > last_n_months else monthly_df.copy()
     
     # Create figure with secondary y-axis
     fig = go.Figure()
@@ -212,183 +218,243 @@ def download_link(df, filename, link_text):
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">{link_text}</a>'
     return href
 
+def display_sample_data():
+    """Display sample data and info about expected format"""
+    st.markdown("### CSV Format für ChargeME-Transaktionen")
+    st.markdown("""
+    Die App erwartet eine CSV-Datei im ChargeME-Format mit folgenden Merkmalen:
+    - Semikolon (`;`) als Trennzeichen
+    - Komma (`,`) als Dezimaltrennzeichen
+    - Folgende wichtige Spalten:
+        - `Ladevorgangs-ID`: Eindeutige ID des Ladevorgangs
+        - `Gestartet`: Startzeit des Ladevorgangs
+        - `Beendet`: Endzeit des Ladevorgangs
+        - `meterValueStart (kWh)`: Zählerstand zu Beginn
+        - `meterValueStop (kWh)`: Zählerstand am Ende
+        - `Ladepunkt-ID`: ID des Ladepunkts
+        - `Standort`: Bezeichnung der Ladestation
+        - `Ladedauer (in Minuten)`: Dauer des Ladevorgangs
+        - `Verbrauch (kWh)`: Verbrauchte Energiemenge
+    """)
+    
+    # Display sample data for download
+    st.markdown("### Beispiel-CSV herunterladen")
+    st.markdown("""
+    Du kannst eine Beispiel-CSV-Datei herunterladen, um das Format zu sehen:
+    """)
+    
+    # Sample data
+    sample_data = """Ladevorgangs-ID;Gestartet;"Gestartet (UTC)";Beendet;"Beendet (UTC)";"meterValueStart (kWh)";"meterValueStop (kWh)";Ladepunkt-ID;Typ;"Ad-Hoc Typ";"signierte Lade Daten";EVSE-ID;"Ladepunkt Zugriff";Standort;Adresse;"Rückerstattung (EUR)";Währung;"Zugriffsschlüssel ID";"Zugriffsschlüssel Typ";"Zugriffsschlüssel Name";"Zugriffsschlüssel Kartenaufdruck";"Ladedauer (in Minuten)";paidDuration;parkingDuration;"Verbrauch (kWh)"
+"""
+    
+    # Create download link for sample data
+    b64 = base64.b64encode(sample_data.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="ChargeMEtransactions-sample.csv">📥 Beispiel-CSV herunterladen</a>'
+    st.markdown(href, unsafe_allow_html=True)
+
 # Main app
 def main():
     st.title("⚡ ChargeME Analyzer")
     st.markdown("### Analyse und Visualisierung der Ladedaten")
     
-    # Load data
-    df = load_data()
+    # File uploader
+    st.sidebar.header("Daten hochladen")
+    uploaded_file = st.sidebar.file_uploader(
+        "Lade deine ChargeME-Transaktionsdatei hoch", 
+        type=["csv"],
+        help="CSV-Datei im ChargeME-Format mit Semikolon als Trennzeichen"
+    )
     
-    if df is not None:
-        # Create summary dataframes
-        monthly_df = create_monthly_summary(df)
-        location_df = create_location_summary(df)
-        weekday_df = create_weekday_summary(df)
+    # Strompreis konfigurieren
+    st.sidebar.header("Einstellungen")
+    cost_per_kwh = st.sidebar.number_input(
+        "Strompreis (€/kWh)", 
+        min_value=0.01, 
+        max_value=1.0, 
+        value=0.49, 
+        step=0.01,
+        format="%.2f"
+    )
+    
+    # Load data
+    if uploaded_file is not None:
+        df = load_data(uploaded_file)
         
-        # Key metrics
-        total_consumption = df['Verbrauch (kWh)'].sum()
-        total_cost = df['Cost_EUR'].sum()
-        total_sessions = len(df)
-        avg_consumption = total_consumption / total_sessions
-        total_duration_hours = df['Ladedauer (in Minuten)'].sum() / 60
-        avg_rate = total_consumption / total_duration_hours if total_duration_hours > 0 else 0
-        
-        # Dashboard layout
-        st.markdown("## 📊 Dashboard")
-        
-        # Row 1 - Summary metrics
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Gesamtverbrauch", f"{total_consumption:.2f} kWh")
-        with col2:
-            st.metric("Gesamtkosten", f"€{total_cost:.2f}")
-        with col3:
-            st.metric("Ladevorgänge", f"{total_sessions}")
-        with col4:
-            st.metric("Durchschnitt", f"{avg_consumption:.2f} kWh/Ladung")
-        
-        # Row 2 - More metrics
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Durchschnittl. Rate", f"{avg_rate:.2f} kWh/h")
-        with col2:
-            first_date = df['Gestartet'].min().strftime('%d.%m.%Y')
-            last_date = df['Gestartet'].max().strftime('%d.%m.%Y')
-            st.metric("Zeitraum", f"{first_date} - {last_date}")
-        with col3:
-            st.metric("Ladedauer gesamt", f"{total_duration_hours:.1f} Stunden")
-        with col4:
-            cost_per_kwh = 0.49
-            st.metric("Strompreis", f"€{cost_per_kwh:.2f}/kWh")
-        
-        # Row 3 - Monthly chart
-        st.plotly_chart(plot_monthly_consumption(monthly_df), use_container_width=True)
-        
-        # Row 4 - Two charts side by side
-        col1, col2 = st.columns(2)
-        with col1:
-            st.plotly_chart(plot_weekday_distribution(weekday_df), use_container_width=True)
-        with col2:
-            st.plotly_chart(plot_hourly_distribution(df), use_container_width=True)
-        
-        # Detailed data tabs
-        tab1, tab2, tab3, tab4 = st.tabs(["Monatliche Übersicht", "Standorte", "Einzelne Ladevorgänge", "Analyse"])
-        
-        # Monthly overview tab
-        with tab1:
-            st.subheader("Monatliche Übersicht")
-            st.dataframe(monthly_df.style.format({
-                'Consumption (kWh)': '{:.2f}',
-                'Cost (€)': '{:.2f}',
-                'Duration (hours)': '{:.1f}',
-                'Avg kWh per Session': '{:.2f}',
-                'Avg Charging Rate (kWh/h)': '{:.2f}'
-            }), use_container_width=True)
+        if df is not None:
+            # Update cost calculation with selected price
+            df['Cost_EUR'] = df['Verbrauch (kWh)'] * cost_per_kwh
             
-            st.markdown(download_link(monthly_df, "monthly_charging_data.csv", "📥 Monatliche Daten herunterladen"), unsafe_allow_html=True)
-        
-        # Locations tab
-        with tab2:
-            st.subheader("Ladungen nach Standort")
-            st.dataframe(location_df.style.format({
-                'Consumption (kWh)': '{:.2f}',
-                'Cost (€)': '{:.2f}',
-                'Duration (hours)': '{:.1f}',
-                'Avg kWh per Session': '{:.2f}',
-                'Avg Charging Rate (kWh/h)': '{:.2f}'
-            }), use_container_width=True)
+            # Create summary dataframes
+            monthly_df = create_monthly_summary(df)
+            location_df = create_location_summary(df)
+            weekday_df = create_weekday_summary(df)
             
-            st.markdown(download_link(location_df, "location_charging_data.csv", "📥 Standort-Daten herunterladen"), unsafe_allow_html=True)
-        
-        # Individual sessions tab
-        with tab3:
-            st.subheader("Einzelne Ladevorgänge")
+            # Key metrics
+            total_consumption = df['Verbrauch (kWh)'].sum()
+            total_cost = df['Cost_EUR'].sum()
+            total_sessions = len(df)
+            avg_consumption = total_consumption / total_sessions
+            total_duration_hours = df['Ladedauer (in Minuten)'].sum() / 60
+            avg_rate = total_consumption / total_duration_hours if total_duration_hours > 0 else 0
             
-            # Date range filter
+            # Dashboard layout
+            st.markdown("## 📊 Dashboard")
+            
+            # Row 1 - Summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Gesamtverbrauch", f"{total_consumption:.2f} kWh")
+            with col2:
+                st.metric("Gesamtkosten", f"€{total_cost:.2f}")
+            with col3:
+                st.metric("Ladevorgänge", f"{total_sessions}")
+            with col4:
+                st.metric("Durchschnitt", f"{avg_consumption:.2f} kWh/Ladung")
+            
+            # Row 2 - More metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Durchschnittl. Rate", f"{avg_rate:.2f} kWh/h")
+            with col2:
+                first_date = df['Gestartet'].min().strftime('%d.%m.%Y')
+                last_date = df['Gestartet'].max().strftime('%d.%m.%Y')
+                st.metric("Zeitraum", f"{first_date} - {last_date}")
+            with col3:
+                st.metric("Ladedauer gesamt", f"{total_duration_hours:.1f} Stunden")
+            with col4:
+                st.metric("Strompreis", f"€{cost_per_kwh:.2f}/kWh")
+            
+            # Row 3 - Monthly chart
+            st.plotly_chart(plot_monthly_consumption(monthly_df), use_container_width=True)
+            
+            # Row 4 - Two charts side by side
             col1, col2 = st.columns(2)
             with col1:
-                start_date = st.date_input("Von Datum", df['Gestartet'].min().date())
+                st.plotly_chart(plot_weekday_distribution(weekday_df), use_container_width=True)
             with col2:
-                end_date = st.date_input("Bis Datum", df['Gestartet'].max().date())
+                st.plotly_chart(plot_hourly_distribution(df), use_container_width=True)
             
-            # Filter data by date range
-            filtered_df = df[(df['Gestartet'].dt.date >= start_date) & 
-                             (df['Gestartet'].dt.date <= end_date)]
+            # Detailed data tabs
+            tab1, tab2, tab3, tab4 = st.tabs(["Monatliche Übersicht", "Standorte", "Einzelne Ladevorgänge", "Analyse"])
             
-            # Display filtered data
-            st.dataframe(filtered_df[['Gestartet', 'Beendet', 'Standort', 
-                                     'Verbrauch (kWh)', 'Cost_EUR', 'Ladedauer (in Minuten)']].sort_values('Gestartet', ascending=False)
-                        .rename(columns={'Verbrauch (kWh)': 'Verbrauch (kWh)', 
-                                        'Cost_EUR': 'Kosten (€)', 
-                                        'Ladedauer (in Minuten)': 'Dauer (Min)'})
-                        .style.format({
-                            'Verbrauch (kWh)': '{:.2f}',
-                            'Kosten (€)': '{:.2f}'
-                        }), use_container_width=True)
+            # Monthly overview tab
+            with tab1:
+                st.subheader("Monatliche Übersicht")
+                st.dataframe(monthly_df.style.format({
+                    'Consumption (kWh)': '{:.2f}',
+                    'Cost (€)': '{:.2f}',
+                    'Duration (hours)': '{:.1f}',
+                    'Avg kWh per Session': '{:.2f}',
+                    'Avg Charging Rate (kWh/h)': '{:.2f}'
+                }), use_container_width=True)
+                
+                st.markdown(download_link(monthly_df, "monthly_charging_data.csv", "📥 Monatliche Daten herunterladen"), unsafe_allow_html=True)
             
-            st.markdown(download_link(filtered_df, "filtered_charging_data.csv", 
-                                     "📥 Gefilterte Daten herunterladen"), unsafe_allow_html=True)
+            # Locations tab
+            with tab2:
+                st.subheader("Ladungen nach Standort")
+                st.dataframe(location_df.style.format({
+                    'Consumption (kWh)': '{:.2f}',
+                    'Cost (€)': '{:.2f}',
+                    'Duration (hours)': '{:.1f}',
+                    'Avg kWh per Session': '{:.2f}',
+                    'Avg Charging Rate (kWh/h)': '{:.2f}'
+                }), use_container_width=True)
+                
+                st.markdown(download_link(location_df, "location_charging_data.csv", "📥 Standort-Daten herunterladen"), unsafe_allow_html=True)
+            
+            # Individual sessions tab
+            with tab3:
+                st.subheader("Einzelne Ladevorgänge")
+                
+                # Date range filter
+                col1, col2 = st.columns(2)
+                with col1:
+                    start_date = st.date_input("Von Datum", df['Gestartet'].min().date())
+                with col2:
+                    end_date = st.date_input("Bis Datum", df['Gestartet'].max().date())
+                
+                # Filter data by date range
+                filtered_df = df[(df['Gestartet'].dt.date >= start_date) & 
+                                (df['Gestartet'].dt.date <= end_date)]
+                
+                # Display filtered data
+                st.dataframe(filtered_df[['Gestartet', 'Beendet', 'Standort', 
+                                        'Verbrauch (kWh)', 'Cost_EUR', 'Ladedauer (in Minuten)']].sort_values('Gestartet', ascending=False)
+                            .rename(columns={'Verbrauch (kWh)': 'Verbrauch (kWh)', 
+                                            'Cost_EUR': 'Kosten (€)', 
+                                            'Ladedauer (in Minuten)': 'Dauer (Min)'})
+                            .style.format({
+                                'Verbrauch (kWh)': '{:.2f}',
+                                'Kosten (€)': '{:.2f}'
+                            }), use_container_width=True)
+                
+                st.markdown(download_link(filtered_df, "filtered_charging_data.csv", 
+                                        "📥 Gefilterte Daten herunterladen"), unsafe_allow_html=True)
+            
+            # Analysis tab
+            with tab4:
+                st.subheader("Erweiterte Analyse")
+                
+                # Charging rate analysis
+                st.write("### Ladegeschwindigkeit")
+                
+                # Remove outliers for valid analysis
+                df_rate = df[(df['Charging_Rate_kWh_per_hour'] > 0) & 
+                            (df['Charging_Rate_kWh_per_hour'] < 50)]  # Remove extreme outliers
+                
+                # Plot charging rate histogram
+                fig = px.histogram(
+                    df_rate, 
+                    x='Charging_Rate_kWh_per_hour',
+                    nbins=30,
+                    labels={'Charging_Rate_kWh_per_hour': 'Charging Rate (kWh/hour)'},
+                    title='Distribution of Charging Rates'
+                )
+                
+                fig.update_layout(
+                    xaxis_title='Charging Rate (kWh/hour)',
+                    yaxis_title='Count',
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Charging efficiency metrics
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Durchschnittliche Ladegeschwindigkeit", 
+                            f"{df_rate['Charging_Rate_kWh_per_hour'].mean():.2f} kWh/h")
+                with col2:
+                    st.metric("Median Ladegeschwindigkeit", 
+                            f"{df_rate['Charging_Rate_kWh_per_hour'].median():.2f} kWh/h")
+                
+                # Charging duration vs consumption scatter plot
+                st.write("### Ladedauer vs. Verbrauch")
+                
+                fig = px.scatter(
+                    df, 
+                    x='Ladedauer (in Minuten)', 
+                    y='Verbrauch (kWh)',
+                    color='Charging_Rate_kWh_per_hour',
+                    color_continuous_scale='Viridis',
+                    labels={
+                        'Ladedauer (in Minuten)': 'Charging Duration (minutes)',
+                        'Verbrauch (kWh)': 'Consumption (kWh)',
+                        'Charging_Rate_kWh_per_hour': 'Charging Rate (kWh/h)'
+                    },
+                    title='Charging Duration vs. Consumption'
+                )
+                
+                fig.update_layout(height=500)
+                st.plotly_chart(fig, use_container_width=True)
         
-        # Analysis tab
-        with tab4:
-            st.subheader("Erweiterte Analyse")
-            
-            # Charging rate analysis
-            st.write("### Ladegeschwindigkeit")
-            
-            # Remove outliers for valid analysis
-            df_rate = df[(df['Charging_Rate_kWh_per_hour'] > 0) & 
-                         (df['Charging_Rate_kWh_per_hour'] < 50)]  # Remove extreme outliers
-            
-            # Plot charging rate histogram
-            fig = px.histogram(
-                df_rate, 
-                x='Charging_Rate_kWh_per_hour',
-                nbins=30,
-                labels={'Charging_Rate_kWh_per_hour': 'Charging Rate (kWh/hour)'},
-                title='Distribution of Charging Rates'
-            )
-            
-            fig.update_layout(
-                xaxis_title='Charging Rate (kWh/hour)',
-                yaxis_title='Count',
-                height=400
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Charging efficiency metrics
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Durchschnittliche Ladegeschwindigkeit", 
-                          f"{df_rate['Charging_Rate_kWh_per_hour'].mean():.2f} kWh/h")
-            with col2:
-                st.metric("Median Ladegeschwindigkeit", 
-                          f"{df_rate['Charging_Rate_kWh_per_hour'].median():.2f} kWh/h")
-            
-            # Charging duration vs consumption scatter plot
-            st.write("### Ladedauer vs. Verbrauch")
-            
-            fig = px.scatter(
-                df, 
-                x='Ladedauer (in Minuten)', 
-                y='Verbrauch (kWh)',
-                color='Charging_Rate_kWh_per_hour',
-                color_continuous_scale='Viridis',
-                labels={
-                    'Ladedauer (in Minuten)': 'Charging Duration (minutes)',
-                    'Verbrauch (kWh)': 'Consumption (kWh)',
-                    'Charging_Rate_kWh_per_hour': 'Charging Rate (kWh/h)'
-                },
-                title='Charging Duration vs. Consumption'
-            )
-            
-            fig.update_layout(height=500)
-            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.error("Die hochgeladene Datei konnte nicht verarbeitet werden. Bitte überprüfe das Format.")
     
     else:
-        st.error("Keine Daten gefunden. Bitte stelle sicher, dass die Datei 'ChargeMEtransactions.csv' vorhanden ist.")
+        # Display information about expected format and sample data
+        display_sample_data()
 
 # Run the app
 if __name__ == "__main__":
